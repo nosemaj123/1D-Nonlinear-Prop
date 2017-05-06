@@ -1,0 +1,165 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Jul  9 14:34:59 2015
+
+@author: oreilly
+"""
+import numpy;
+from numpy import *;
+from datetime import datetime;
+
+start = datetime.now();
+
+n = 1.3359; #index of refraction for pulse in water
+c = 2.99e8; #speed of light in centimeters per nanosecond
+deln = 0; #delnkerr + delntherm + delnplas
+n2R = 0+4.0e-20j;
+vac_per = 8.854e-12;
+driven = 0;
+spikes = 1; #0 for smooth; 1 for spiky
+d = 0.94916; #equal to sqrt(smooth_total / spiky_total) without factor
+
+fwhm = 6.0e-9; #full width half maximum in ns
+pulse_lt = fwhm / (0.36); #sigma in nanoseconds
+lmbdap = 5.32e-7; #wavelength in centimeters
+wv_nmbrp = (2 * pi) / lmbdap; #wave number
+omegap = c * wv_nmbrp; #angular frequency of pump wave
+lmbdar = 6.49e-7;
+wv_nmbrr = (2 * pi) / lmbdar;
+omegar = c * wv_nmbrr;
+pump_amp = 1.096e9 / 20;
+ramp = pump_amp * 1e-2;
+bril_amp = pump_amp * 1e-6;
+
+#density parameters
+v = 1482.0; #speed of sound in cm per ns
+OMEGABp = 4.361e11; #brillouin angular frequency
+OMEGABr = 3.575e11;
+qp = OMEGABp / v; #brillouin wave number
+qr = OMEGABr / v;
+pbril_damp = 200 * 2.964e9; #brillouin damping constant
+rbril_damp = 200 * 1.992e9;
+es_cons = 0.778; #electrostrictive constant
+rho0 = 999.97; #kg per m^3
+vac_per = 8.854e-12;
+
+z_max = 1.20; #in cm, column is 120
+t_max = ((z_max * n) / c) + pulse_lt; #time for pulse to enter plus time to leave
+delt = pulse_lt / 4000.0; #time step size
+delz = delt * (c / n); #z step size
+nt = int(ceil(t_max / delt)); #number of time steps to be taken
+nz = int(ceil(z_max / delz)); #number of z steps to be taken
+cons = ((c * delt) - (n * delz) ) / ((c * delt) + (n * delz)); #constant for advancing waves
+pb_drive_const = (1j * omegap * es_cons * delz * delt) / (rho0 * ((n * c * delt) + ((n ** 2) * delz)));
+rb_drive_const = (1j * omegar * es_cons * delz * delt) / (rho0 * ((n * c * delt) + ((n ** 2) * delz)));
+pdrive_const = ((delz * c * delt) / ((c * delt + n * delz) * 1j)) * 4 * wv_nmbrp;
+rdrive_const = ((delz * c * delt) / ((c * delt + n * delz) * 1j)) * 4 * wv_nmbrr;
+
+#initialize conditions
+trange = linspace(0,t_max,nt);
+zrange = linspace(0,z_max,nz);
+pump = zeros((nt,nz)) + zeros((nt,nz)) * 1j;
+raman = zeros((nt,nz)) + zeros((nt,nz)) * 1j;
+pbril = zeros((nt,nz)) + zeros((nt,nz)) * 1j;
+rbril = zeros((nt,nz)) + zeros((nt,nz)) * 1j;
+dens = zeros((nt,nz)) + zeros((nt,nz)) * 1j;
+p_dens = zeros((nt,nz)) + zeros((nt,nz)) * 1j;
+r_dens = zeros((nt,nz)) + zeros((nt,nz)) * 1j;
+pbril[0] = bril_amp;
+rbril[0] = bril_amp;
+
+#energy leaving column
+pump_out = zeros(nt);
+raman_out = zeros(nt);
+pbril_out = zeros(nt);
+rbril_out = zeros(nt);
+
+#define new-time row functions
+def advancepump(time):
+    for z in range(0,nz - 1):
+        rint = .5 * vac_per * n * c * (.5 * (raman[time,z] + raman[time,z + 1])) ** 2;
+        pr_driver = pdrive_const * (deln * .5 * (pump[time + 1,z] + pump[time,z + 1]) + n2R.conjugate() * rint * .5 * (pump[time + 1,z] + pump[time,z + 1]));
+        pb_driver = pb_drive_const * (.5 * (dens[time,z + 1] + dens[time,z])) * .5 * (pbril[time,z] + pbril[time,z + 1]);
+        pump[time + 1,z + 1] = (cons * (pump[time+1,z] - pump[time,z+1])) + pump[time,z] + (pr_driver + pb_driver) * driven;
+
+def advanceraman(time):
+    for z in range(0,nz - 1):
+        pint = .5 * vac_per * n * c * (.25 * (pump[time + 1,z + 1] + pump[time + 1,z] + pump[time,z + 1] + pump[time,z])) ** 2;
+        rp_driver = rdrive_const * (deln * .5 * (raman[time + 1,z] + raman[time,z + 1]) + n2R * pint * .5 * (raman[time + 1,z] + raman[time,z + 1]));
+        rb_driver = rb_drive_const * (.5 * (dens[time,z] + dens[time,z + 1])) * .5 * (rbril[time,z] + rbril[time,z + 1]);
+        raman[time + 1,z + 1] = (cons * (raman[time+1,z] - raman[time,z+1])) + raman[time,z] + (rp_driver + rb_driver) * driven;
+
+def advancepumpbril(time):
+    for z in range(0,nz-1):
+        pb_driver = pb_drive_const * (.5 * (dens[time,nz - 2 - z] + dens[time,nz - 1 - z])).conjugate() * 0.25 * (pump[time,nz - 1 - z] + pump[time,nz - 2 - z] + pump[time + 1,nz - 1 - z] + pump[time + 1,nz - 2 - z]);
+        pbril[time + 1,nz - 2 - z] = (cons * (pbril[time + 1,nz - 1 - z] - pbril[time,nz - 2 - z])) + pbril[time, nz - 1 - z] + pb_driver * driven;
+
+def advanceramanbril(time):
+    for z in range(0,nz-1):
+        rb_driver = rb_drive_const * (.5 * (dens[time,nz - 2 - z] + dens[time,nz - 1 - z])).conjugate() * 0.25 * (raman[time,nz - 1 - z] + raman[time,nz - 2 - z] + raman[time + 1,nz - 1 - z] + raman[time + 1,nz - 2 - z]);
+        rbril[time + 1,nz - 2 - z] = (cons * (rbril[time + 1,nz - 1 - z] - rbril[time,nz - 2 - z])) + rbril[time, nz - 1 - z] + rb_driver * driven;
+
+def advancedens(time):
+    for z in range(0,nz - 1):
+        p_dens[time + 1,z] = (es_cons * (qp ** 2) * vac_per * pump[time + 1,z] * pbril[time + 1,z].conjugate()) / (OMEGABp * pbril_damp * -1j);
+        r_dens[time + 1,z] = (es_cons * (qr ** 2) * vac_per * raman[time + 1,z] * rbril[time + 1,z].conjugate()) / (OMEGABr * rbril_damp * -1j);
+        dens[time + 1,z] = p_dens[time + 1,z] + r_dens[time + 1,z];
+
+def energies(time):
+    pump_out[time + 1] = pump_out[time] + (delt * pump[time,nz-1] ** 2);
+    raman_out[time + 1] = raman_out[time] + (delt * raman[time,nz-1] ** 2);
+    pbril_out[time + 1] = pbril_out[time] + (delt * pbril[time,0] ** 2);
+    rbril_out[time + 1] = rbril_out[time] + (delt * rbril[time,0] ** 2);
+
+for t in range(0,nt-1):
+
+    print str(t)
+
+    pbril[t + 1,nz - 1] = bril_amp;
+    rbril[t + 1,nz - 1] = bril_amp;
+    if trange[t + 1] < pulse_lt:
+        if spikes:
+            pump[t + 1,0] = d * pump_amp * ((sin(pi * trange[t + 1] / pulse_lt) ** 2) * (1 + .5 * sin(10 * pi * trange[t + 1] / pulse_lt)) * (1 + .1 * sin(200 * pi * trange[t + 1] / pulse_lt)));
+        else:
+            pump[t + 1,0] = pump_amp * (sin(pi * trange[t + 1] / pulse_lt) ** 2);
+        raman[t + 1,0] = ramp * (sin(pi * trange[t + 1] / pulse_lt) ** 2);
+
+    advancepump(t);
+    advanceraman(t);
+    advancepumpbril(t);
+    advanceramanbril(t);
+    advancedens(t);
+    energies(t);    
+
+energy_sum = pump_out + raman_out + pbril_out + rbril_out;
+#save data into files
+numpy.savez('spike',pump=pump,raman=raman,pbril=pbril,rbril=rbril,dens=dens,pump_out=pump_out,raman_out=raman_out,pbril_out=pbril_out,rbril_out=rbril_out,energy_sum=energy_sum);
+
+#figure();
+#imshow(absolute(pump),aspect='auto',extent=[0,z_max,0,t_max],origin='lower');
+#minc = 1.0*min(pump.flatten());
+#maxc = 1.0*max(pump.flatten());
+#cbar = plt.colorbar(ticks=[minc,maxc], orientation='vertical')
+#cbar.set_label(r'Amplitude (V/m)',rotation=270,labelpad=1); #labelpad set in 1/72 of an inch
+#figure();
+#imshow(absolute(raman),aspect='auto',extent=[0,z_max,0,t_max],origin='lower');
+#minc = 1.0*min(raman.flatten());
+#maxc = 1.0*max(raman.flatten());
+#cbar = plt.colorbar(ticks=[minc,maxc], orientation='vertical')
+#cbar.set_label(r'Amplitude (V/m)',rotation=270,labelpad=1); #labelpad set in 1/72 of an inch
+#figure();
+#imshow(absolute(pbril),aspect='auto',extent=[0,z_max,0,t_max],origin='lower');
+#minc = 1.0*min(pbril.flatten());
+#maxc = 1.0*max(pbril.flatten());
+#cbar = plt.colorbar(ticks=[minc,maxc], orientation='vertical')
+#cbar.set_label(r'Amplitude (V/m)',rotation=270,labelpad=1); #labelpad set in 1/72 of an inch
+#figure();
+#imshow(absolute(rbril),aspect='auto',extent=[0,z_max,0,t_max],origin='lower');
+#minc = 1.0*min(rbril.flatten());
+#maxc = 1.0*max(rbril.flatten());
+#cbar = plt.colorbar(ticks=[minc,maxc], orientation='vertical')
+#cbar.set_label(r'Amplitude (V/m)',rotation=270,labelpad=1); #labelpad set in 1/72 of an inch
+#figure();
+#imshow(absolute(dens),aspect='auto',extent=[0,z_max,0,t_max],origin='lower');
+
+print 'Done after ' + str(datetime.now() - start)
